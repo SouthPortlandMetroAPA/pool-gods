@@ -416,6 +416,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   document.getElementById('adminMain').classList.remove('hidden');
   await loadPlayers();
+  startPolling();
 });
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -423,14 +424,33 @@ document.addEventListener('DOMContentLoaded', async () => {
    ══════════════════════════════════════════════════════════════════════ */
 async function loadPlayers() {
   try {
+    // Sort: unpaid first (paid=false < true), then oldest-registered first
+    // inside each group. This keeps the "work list" — people who still
+    // need to pay — pinned at the top of the admin table.
     allPlayers = await sbGet(
-      'pool_gods_players?select=*&order=registered_at.asc'
+      'pool_gods_players?select=*&order=paid.asc,registered_at.asc'
     );
     renderStats();
     renderPlayers();
   } catch (e) {
     showStatus('Failed to load: ' + esc(e.message), false);
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   POLLING — pick up new registrations without a manual refresh.
+   Skipped while a user-triggered write (paid toggle / delete / draw
+   / reset) is in flight so we don't clobber local state.
+   ══════════════════════════════════════════════════════════════════════ */
+let pollHandle = null;
+let writeInFlight = false;
+
+function startPolling() {
+  if (pollHandle) return;
+  pollHandle = setInterval(async () => {
+    if (writeInFlight || document.hidden) return;
+    try { await loadPlayers(); } catch { /* soft-fail, try again next tick */ }
+  }, 30000);
 }
 
 function renderStats() {
@@ -537,15 +557,16 @@ function renderPlayers() {
 
 /** Flip the paid flag on a player. */
 async function togglePaid(id, paid) {
+  writeInFlight = true;
   try {
     await sbPatch('pool_gods_players?id=eq.' + id, { paid, updated_at: new Date().toISOString() });
-    const p = allPlayers.find(x => x.id === id);
-    if (p) p.paid = paid;
-    renderStats();
-    renderPlayers();
+    // Reload so the row re-sorts to its correct group (paid moves to bottom).
+    await loadPlayers();
   } catch (e) {
     showStatus('Failed to toggle paid: ' + esc(e.message), false);
     await loadPlayers();  // re-sync
+  } finally {
+    writeInFlight = false;
   }
 }
 window.togglePaid = togglePaid;
@@ -558,6 +579,7 @@ async function deletePlayer(id, displayName) {
     return showStatus('Cannot delete — already paired. Reset the draw first.', false);
   }
   if (!confirm('Delete ' + displayName + '? This cannot be undone.')) return;
+  writeInFlight = true;
   try {
     await sbDelete('pool_gods_players?id=eq.' + id);
     allPlayers = allPlayers.filter(x => x.id !== id);
@@ -566,6 +588,8 @@ async function deletePlayer(id, displayName) {
     showStatus('Deleted ' + displayName + '.', true);
   } catch (e) {
     showStatus('Failed to delete: ' + esc(e.message), false);
+  } finally {
+    writeInFlight = false;
   }
 }
 window.deletePlayer = deletePlayer;
@@ -586,6 +610,7 @@ async function runRandomPair() {
   const btn = document.getElementById('btnRandomPair');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>Drawing\u2026';
+  writeInFlight = true;
 
   // Fisher-Yates shuffle in place
   const shuffled = paid.slice();
@@ -621,6 +646,7 @@ async function runRandomPair() {
   } finally {
     btn.disabled = false;
     btn.innerHTML = '&#127919; Random Pair';
+    writeInFlight = false;
   }
 }
 window.runRandomPair = runRandomPair;
@@ -634,6 +660,7 @@ async function resetDraw() {
   const btn = document.getElementById('btnResetDraw');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>Resetting\u2026';
+  writeInFlight = true;
 
   try {
     // One PATCH across everyone currently paired.
@@ -651,6 +678,7 @@ async function resetDraw() {
   } finally {
     btn.disabled = false;
     btn.innerHTML = '&#8635; Reset Draw';
+    writeInFlight = false;
   }
 }
 window.resetDraw = resetDraw;
