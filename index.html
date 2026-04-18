@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!--
+============================================================================
+Tournament of the Pool Gods — player registration + status page
+============================================================================
+
+PURPOSE:
+  Player-facing page for the NW Challenge "Fast 8 Scotch Doubles" bonus
+  event. Players register with APA # + name; the app remembers them via
+  localStorage. Once an admin runs the random pair, each player sees
+  their team number and partner name on their own device.
+
+STATES:
+  (1) Not registered      → registration form
+  (2) Registered, unpaid  → "Pay $5 at the tournament desk"
+  (3) Registered, paid    → "You're in the draw. Pairings revealed soon."
+  (4) Registered, paired  → "🏛 Team N — You + Partner Name"
+
+DATA FLOW:
+  Browser → Supabase REST (PostgREST), no backend proxy.
+  Anon RLS allows SELECT + INSERT. The admin (with service_role key) is
+  the only writer for paid toggle, pairing, delete.
+
+APA # is the identity. Re-entering an already-registered APA # logs
+that record back in — useful if the player cleared their browser or
+switched devices.
+============================================================================
+-->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tournament of the Pool Gods — Register</title>
+<style>
+/* ---------- Reset + tokens ---------- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --primary: #c2b280;           /* gold — shared NW Challenge gold */
+  --primary-dark: #b5a574;
+  --bg: #f5f0e8;                /* warm cream */
+  --text: #111;
+  --card: #ffffff;
+  --muted: #666;
+  --border: #d4c9a8;
+  --radius: 10px;
+  --spacing: 4px;
+  --success: #2e7d32;
+  --danger: #c0392b;
+  --olympus: #3b2f5e;            /* deep plum — Mt. Olympus accent */
+  --laurel: #6a8f5c;              /* laurel green */
+  --shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+html { font-size: 16px; }
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+}
+.hidden { display: none !important; }
+
+/* ---------- Header ---------- */
+.header {
+  background:
+    radial-gradient(ellipse at 20% 10%,  rgba(255,255,255,0.35) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 90%,  rgba(0,0,0,0.08)       0%, transparent 50%),
+    var(--primary);
+  padding: 28px 16px 40px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.header-inner {
+  position: relative;
+  max-width: 720px;
+  margin: 0 auto;
+}
+.header h1 {
+  font-size: clamp(1.4rem, 1.1rem + 1.8vw, 2rem);
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+.header .eyebrow {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--olympus);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.header .subtitle {
+  font-size: clamp(0.875rem, 0.75rem + 0.5vw, 1.05rem);
+  font-style: italic;
+  color: rgba(0,0,0,0.65);
+  margin-top: 4px;
+}
+.admin-link {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 0.7rem;
+  color: var(--text);
+  text-decoration: none;
+  opacity: 0.45;
+  padding: 6px 10px;
+}
+.admin-link:hover { opacity: 0.85; }
+
+/* Greek-key-ish bottom border */
+.header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0; right: 0;
+  height: 6px;
+  background-image: linear-gradient(90deg, var(--olympus) 50%, transparent 50%);
+  background-size: 16px 6px;
+  opacity: 0.35;
+}
+
+/* ---------- Container ---------- */
+.container {
+  flex: 1;
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+/* ---------- Banners ---------- */
+.banner {
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-weight: 500;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+.banner-success { background: #e8f5e9; color: var(--success); border: 1px solid #c8e6c9; }
+.banner-error   { background: #ffebee; color: var(--danger);  border: 1px solid #ffcdd2; }
+
+/* ---------- Cards ---------- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 22px 20px;
+  margin-bottom: 16px;
+}
+
+/* Event-intro card — the pitch */
+.intro-card h2 {
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--olympus);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.intro-card p {
+  font-size: 0.95rem;
+  margin-bottom: 10px;
+}
+.intro-card p:last-child { margin-bottom: 0; }
+.intro-card .facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+  font-size: 0.9rem;
+}
+.intro-card .facts dt { font-weight: 700; color: var(--olympus); }
+.intro-card .facts dd { color: var(--text); }
+
+/* ---------- Form ---------- */
+.form-group { margin-bottom: 14px; }
+.form-group label {
+  display: block;
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin-bottom: 4px;
+}
+.form-group input[type="text"] {
+  width: 100%;
+  min-height: 48px;
+  padding: 12px;
+  font-size: 1rem;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--text);
+}
+.form-group input:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.form-row {
+  display: flex;
+  gap: 8px;
+}
+.form-row .form-group { flex: 1; margin-bottom: 0; }
+
+/* ---------- Buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 12px 20px;
+  font-size: 1rem;
+  font-family: inherit;
+  font-weight: 700;
+  border-radius: var(--radius);
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-gold { background: var(--primary); border-color: var(--primary); color: var(--text); width: 100%; }
+.btn-gold:hover { background: var(--primary-dark); border-color: var(--primary-dark); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.8125rem;
+  min-height: 36px;
+  padding: 6px 12px;
+  font-weight: 500;
+}
+.btn-outline:hover { border-color: var(--danger); color: var(--danger); }
+
+/* ---------- Status card (post-registration) ---------- */
+.status-card {
+  text-align: center;
+}
+.status-icon {
+  font-size: 2.5rem;
+  display: block;
+  margin: 4px 0 6px;
+}
+.status-card h2 {
+  font-size: 1.15rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+.status-card p {
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+.status-card .you-are {
+  color: var(--olympus);
+  font-weight: 700;
+  font-size: 1rem;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.paid-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid currentColor;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.paid-pill.yes { color: var(--success); background: #e8f5e9; border-color: #c8e6c9; }
+.paid-pill.no  { color: #8a6d1b;       background: #fff4d6; border-color: #f0dfa3; }
+
+/* ---------- Team reveal card ---------- */
+.team-card {
+  background: linear-gradient(180deg, #fffbec 0%, #fff 70%);
+  border: 2px solid var(--primary);
+  border-radius: 16px;
+  padding: 28px 20px;
+  box-shadow: 0 6px 24px rgba(194, 178, 128, 0.35);
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.team-card::before,
+.team-card::after {
+  content: '\26A1';   /* ⚡ lightning bolt */
+  position: absolute;
+  font-size: 1.5rem;
+  opacity: 0.3;
+  color: var(--olympus);
+}
+.team-card::before { top: 10px; left: 12px; transform: rotate(-12deg); }
+.team-card::after  { bottom: 10px; right: 12px; transform: rotate(12deg); }
+
+.team-eyebrow {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  color: var(--olympus);
+}
+.team-number {
+  font-size: clamp(2.5rem, 2rem + 3vw, 3.75rem);
+  font-weight: 900;
+  line-height: 1;
+  margin: 4px 0 14px;
+  color: var(--text);
+  letter-spacing: -0.02em;
+}
+.team-number .hash {
+  color: var(--primary-dark);
+  margin-right: 4px;
+}
+.team-partnership {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+.team-you,
+.team-partner {
+  font-size: 1.1rem;
+  font-weight: 700;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: rgba(194, 178, 128, 0.12);
+  min-width: 220px;
+}
+.team-you .role,
+.team-partner .role {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.team-and {
+  font-size: 1.25rem;
+  font-weight: 800;
+  color: var(--olympus);
+  font-style: italic;
+  margin: 2px 0;
+}
+
+/* ---------- Footer ---------- */
+.footer {
+  text-align: center;
+  padding: 16px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     HEADER
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="header">
+  <div class="header-inner">
+    <a href="admin.html" class="admin-link">Admin</a>
+    <div class="eyebrow">&#127963; NW Challenge Bonus Event</div>
+    <h1>Tournament of the Pool Gods</h1>
+    <p class="subtitle">Fast 8 Scotch Doubles &mdash; with divine interference</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     CONTAINER (all screens render inside)
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="container">
+
+  <div id="banner"></div>
+
+  <!-- (1) REGISTRATION SCREEN (shown when not logged in) -->
+  <section id="screenRegister">
+    <div class="card intro-card">
+      <h2>The Rules of Olympus</h2>
+      <p><strong>Fast 8</strong> is 8-ball with a lighter rack &mdash; only <strong>4 solids &amp; 4 stripes</strong>. Games move quick.</p>
+      <p>The <strong>Pool Gods</strong> are real people in Greek-god getups patrolling the tables. They will <em>watch, meddle, help, and hinder</em> as the mood strikes. Expect chaos. Expect favors. Expect smiting.</p>
+      <p>Partners are <strong>randomly drawn</strong> after registration closes &mdash; no skill-level matching. Bring charm, not strategy.</p>
+      <dl class="facts">
+        <dt>Entry</dt><dd>$5 &mdash; pay at the tournament desk</dd>
+        <dt>Format</dt><dd>Scotch Doubles (Fast 8), random partners</dd>
+        <dt>When</dt><dd>Saturday evening</dd>
+        <dt>Where</dt><dd>Hallway outside the tournament room</dd>
+      </dl>
+    </div>
+
+    <div class="card">
+      <form id="registerForm" autocomplete="off">
+        <div class="form-group">
+          <label for="memberInput">APA Member Number</label>
+          <input type="text" id="memberInput" inputmode="numeric" pattern="[0-9]*"
+                 placeholder="e.g. 12345678" autocomplete="off" required>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="firstInput">First Name</label>
+            <input type="text" id="firstInput" autocomplete="given-name" required>
+          </div>
+          <div class="form-group">
+            <label for="lastInput">Last Name</label>
+            <input type="text" id="lastInput" autocomplete="family-name" required>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-gold" id="submitBtn">Sign Me Up</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- (2) REGISTERED STATUS SCREEN (unpaid / paid / paired) -->
+  <section id="screenStatus" class="hidden">
+    <!-- Status block changes by state -->
+    <div class="card status-card" id="statusCard"></div>
+
+    <!-- Sign-out link for current device -->
+    <div style="text-align:center; margin-top: 4px">
+      <button type="button" class="btn btn-outline" onclick="signOut()">Not you? Sign out</button>
+    </div>
+  </section>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     FOOTER
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="footer">Pool Gods &middot; v0.1</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════
+   POOL GODS — client logic
+   ══════════════════════════════════════════════════════════════════════
+   - Direct Supabase REST. No proxy.
+   - APA # is the identity key. Re-entering an already-registered APA #
+     logs that record in (handles cleared localStorage / new device).
+   - localStorage key `pool_gods_login` holds the minimum we need to
+     re-fetch a fresh row on page load.
+   ══════════════════════════════════════════════════════════════════════ */
+
+const SUPABASE_URL = 'https://dqzbekoaysgaiqljueac.supabase.co';
+const ANON_KEY     = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxemJla29heXNnYWlxbGp1ZWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxNzA5NzgsImV4cCI6MjA5MDc0Njk3OH0.cCdGxZ4zEFzU_r6lWSDeoNWG67Q4MSYCAtpds035dfU';
+const LS_KEY       = 'pool_gods_login';
+
+const HEADERS = { apikey: ANON_KEY, Authorization: 'Bearer ' + ANON_KEY };
+const WRITE_HEADERS = { ...HEADERS, 'Content-Type': 'application/json', Prefer: 'return=representation' };
+
+/* ── DOM ───────────────────────────────────────────────────────────── */
+const screenRegister = document.getElementById('screenRegister');
+const screenStatus   = document.getElementById('screenStatus');
+const statusCard     = document.getElementById('statusCard');
+const banner         = document.getElementById('banner');
+const registerForm   = document.getElementById('registerForm');
+const memberInput    = document.getElementById('memberInput');
+const firstInput     = document.getElementById('firstInput');
+const lastInput      = document.getElementById('lastInput');
+const submitBtn      = document.getElementById('submitBtn');
+
+/* ── State ─────────────────────────────────────────────────────────── */
+let currentPlayer = null;  // { id, member_number, first_name, last_name, paid, team_number, partner_id }
+
+/* ── Utilities ─────────────────────────────────────────────────────── */
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+function showBanner(type, msg, timeout) {
+  const icon = type === 'success' ? '\u2713' : '\u26A0';
+  banner.innerHTML = '<div class="banner banner-' + type + '">' + icon + ' ' + esc(msg) + '</div>';
+  if (timeout) setTimeout(() => { banner.innerHTML = ''; }, timeout);
+}
+function hideBanner() { banner.innerHTML = ''; }
+
+async function sbFetch(path, opts) {
+  const res = await fetch(SUPABASE_URL + '/rest/v1/' + path, opts || { headers: HEADERS });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error('Supabase ' + res.status + ': ' + body);
+  }
+  return res.json();
+}
+
+/* ── Fetch one player row by APA # (returns null if not found) ─────── */
+async function fetchByMemberNumber(memberNumber) {
+  const rows = await sbFetch(
+    'pool_gods_players?member_number=eq.' + encodeURIComponent(memberNumber)
+    + '&select=id,member_number,first_name,last_name,paid,team_number,partner_id'
+  );
+  return rows.length ? rows[0] : null;
+}
+
+/* ── Fetch the partner's display info by id ────────────────────────── */
+async function fetchPartnerName(partnerId) {
+  if (!partnerId) return null;
+  const rows = await sbFetch(
+    'pool_gods_players?id=eq.' + partnerId + '&select=first_name,last_name'
+  );
+  if (!rows.length) return null;
+  return rows[0].first_name + ' ' + rows[0].last_name;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   REGISTRATION
+   ══════════════════════════════════════════════════════════════════════ */
+registerForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  hideBanner();
+
+  const memberNumber = memberInput.value.trim();
+  const firstName    = firstInput.value.trim();
+  const lastName     = lastInput.value.trim();
+  if (!memberNumber || !firstName || !lastName) {
+    return showBanner('error', 'APA number, first name, and last name are all required.', 4000);
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Signing you up\u2026';
+
+  try {
+    // Already registered? Silently log them in.
+    const existing = await fetchByMemberNumber(memberNumber);
+    if (existing) {
+      currentPlayer = existing;
+      saveSession();
+      await renderStatus();
+      showBanner('success', 'Welcome back, ' + existing.first_name + '!', 3500);
+      return;
+    }
+
+    // New registration.
+    const inserted = await sbFetch('pool_gods_players', {
+      method: 'POST',
+      headers: WRITE_HEADERS,
+      body: JSON.stringify({
+        member_number: memberNumber,
+        first_name:    firstName,
+        last_name:     lastName
+      })
+    });
+    currentPlayer = inserted[0];
+    saveSession();
+    await renderStatus();
+    showBanner('success', 'You\u2019re on the list! Pay $5 at the tournament desk to lock in.', 5000);
+  } catch (err) {
+    // Surface unique-constraint collisions as a friendly message
+    if (String(err.message).includes('pool_gods_players_member_number_key')
+        || String(err.message).includes('23505')) {
+      showBanner('error', 'That APA number is already registered. Try signing in with it again.', 5000);
+    } else {
+      showBanner('error', 'Something went wrong: ' + err.message, 6000);
+    }
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Sign Me Up';
+  }
+});
+
+/* ══════════════════════════════════════════════════════════════════════
+   SESSION (localStorage)
+   ══════════════════════════════════════════════════════════════════════ */
+function saveSession() {
+  if (!currentPlayer) return;
+  localStorage.setItem(LS_KEY, JSON.stringify({
+    id: currentPlayer.id,
+    member_number: currentPlayer.member_number
+  }));
+}
+function clearSession() {
+  localStorage.removeItem(LS_KEY);
+  currentPlayer = null;
+}
+function readSession() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY)); }
+  catch { return null; }
+}
+
+function signOut() {
+  clearSession();
+  screenStatus.classList.add('hidden');
+  screenRegister.classList.remove('hidden');
+  memberInput.value = firstInput.value = lastInput.value = '';
+  memberInput.focus();
+  hideBanner();
+}
+window.signOut = signOut;
+
+/* ══════════════════════════════════════════════════════════════════════
+   STATUS SCREEN (4 visual states)
+   ══════════════════════════════════════════════════════════════════════ */
+async function renderStatus() {
+  screenRegister.classList.add('hidden');
+  screenStatus.classList.remove('hidden');
+
+  const p = currentPlayer;
+  let html = '';
+
+  if (p.team_number && p.partner_id) {
+    // State 4: paired
+    let partnerName = 'Your partner';
+    try { partnerName = (await fetchPartnerName(p.partner_id)) || partnerName; } catch {}
+    html =
+      '<div class="team-eyebrow">Your Pool Gods Team</div>'
+      + '<div class="team-number"><span class="hash">#</span>' + p.team_number + '</div>'
+      + '<div class="team-partnership">'
+        + '<div class="team-you"><span class="role">You</span>' + esc(p.first_name + ' ' + p.last_name) + '</div>'
+        + '<div class="team-and">&amp;</div>'
+        + '<div class="team-partner"><span class="role">Partner</span>' + esc(partnerName) + '</div>'
+      + '</div>';
+    statusCard.className = 'card team-card';
+    statusCard.innerHTML = html;
+    return;
+  }
+
+  // Everything else uses the plain status-card look
+  statusCard.className = 'card status-card';
+
+  if (!p.paid) {
+    // State 2: registered, unpaid
+    statusCard.innerHTML =
+      '<span class="status-icon">\u{1F4B5}</span>'
+      + '<h2>You\u2019re signed up</h2>'
+      + '<p>Pay <strong>$5</strong> at the tournament desk (hallway outside the tournament room) to be included in the draw.</p>'
+      + '<div class="you-are">'
+        + esc(p.first_name + ' ' + p.last_name)
+        + ' &middot; #' + esc(p.member_number)
+        + '<span class="paid-pill no">Unpaid</span>'
+      + '</div>';
+    return;
+  }
+
+  // State 3: paid, waiting for pairing
+  statusCard.innerHTML =
+    '<span class="status-icon">\u26A1</span>'
+    + '<h2>The Pool Gods are watching</h2>'
+    + '<p>You\u2019re paid up and in the draw. Your partner will be revealed right here as soon as the pairings are done.</p>'
+    + '<p style="font-size:0.85rem">Check back on this device before the event &mdash; keep this page bookmarked.</p>'
+    + '<div class="you-are">'
+      + esc(p.first_name + ' ' + p.last_name)
+      + ' &middot; #' + esc(p.member_number)
+      + '<span class="paid-pill yes">Paid</span>'
+    + '</div>';
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   AUTO-LOGIN on page load
+   ══════════════════════════════════════════════════════════════════════ */
+async function init() {
+  const session = readSession();
+  if (!session || !session.member_number) return;  // show registration form
+
+  try {
+    const fresh = await fetchByMemberNumber(session.member_number);
+    if (!fresh) {
+      // Admin deleted the record — clear stale session, back to form.
+      clearSession();
+      return;
+    }
+    currentPlayer = fresh;
+    saveSession();
+    await renderStatus();
+  } catch (err) {
+    // Network hiccup — leave form visible, don't nuke session
+    console.warn('Auto-login failed:', err);
+  }
+}
+
+init();
+</script>
+</body>
+</html>

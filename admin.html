@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!--
+============================================================================
+Tournament of the Pool Gods — Admin
+============================================================================
+
+PURPOSE:
+  Admin-only operations for the Pool Gods registration: toggle paid,
+  delete unpaired players, run the random pair, reset the draw.
+
+AUTH:
+  ?key=<service_role_key> in the URL. Validated on load with a test
+  query. Read + write both use the service_role key (simpler; we trust
+  the URL in this context).
+
+RULES:
+  - Delete blocked on paired players. Admin must Unpair or Reset first.
+  - Random Pair is allowed ONLY when:
+      * at least 2 paid players exist
+      * paid count is EVEN
+      * no one is currently paired
+  - Reset Draw clears all team_number + partner_id in one PATCH.
+============================================================================
+-->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pool Gods — Admin</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --primary: #c2b280;
+  --primary-dark: #b5a574;
+  --bg: #f5f0e8;
+  --text: #111;
+  --card: #ffffff;
+  --muted: #666;
+  --border: #d4c9a8;
+  --radius: 10px;
+  --spacing: 4px;
+  --success: #2e7d32;
+  --danger: #c0392b;
+  --warn: #8a6d1b;
+  --olympus: #3b2f5e;
+  --shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+html, body {
+  margin: 0; padding: 0;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px; line-height: 1.5;
+  background: var(--bg); color: var(--text);
+}
+
+.page { max-width: 1000px; margin: 0 auto; padding: 16px; }
+
+/* ---------- Header ---------- */
+.header {
+  background: var(--primary);
+  padding: 24px 16px 28px;
+  text-align: center;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  position: relative;
+  overflow: hidden;
+}
+.header h1 {
+  margin: 0; font-size: 1.5rem; font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.header .subtitle { font-size: 1rem; color: rgba(0,0,0,0.6); margin-top: 2px; }
+.header::after {
+  content: '';
+  position: absolute; bottom: 0; left: 0; right: 0; height: 6px;
+  background-image: linear-gradient(90deg, var(--olympus) 50%, transparent 50%);
+  background-size: 16px 6px;
+  opacity: 0.35;
+}
+.admin-badge {
+  position: absolute; top: 8px; right: 10px;
+  background: var(--danger); color: #fff;
+  font-size: 0.7rem; font-weight: 700;
+  padding: 3px 8px; border-radius: 999px;
+  letter-spacing: 0.06em;
+}
+
+/* ---------- Cards ---------- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.card h2 {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  color: var(--olympus);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+/* ---------- Key gate ---------- */
+.key-gate { text-align: center; padding: 40px 16px; }
+.key-gate .card { max-width: 420px; margin: 0 auto; }
+
+/* ---------- Stats ---------- */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+}
+.stat {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fafaf4;
+  text-align: center;
+}
+.stat .num { font-size: 1.6rem; font-weight: 800; line-height: 1.1; color: var(--olympus); }
+.stat .label {
+  font-size: 0.7rem; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+}
+
+/* ---------- Action bar ---------- */
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+  min-height: 44px;
+  padding: 10px 16px;
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.95rem;
+  border-radius: var(--radius);
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.btn-primary  { background: var(--primary); color: #111; }
+.btn-primary:hover:not(:disabled)  { background: var(--primary-dark); }
+.btn-primary:disabled { background: #ddd; color: #888; cursor: not-allowed; }
+.btn-danger   { background: var(--danger); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: #9a221a; }
+.btn-outline  { background: #fff; border: 1px solid var(--border); color: var(--text); }
+.btn-outline:hover:not(:disabled) { background: #faf8f3; }
+.btn-sm { min-height: 32px; padding: 4px 10px; font-size: 0.8rem; }
+
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ---------- Draw gate hint ---------- */
+.draw-hint {
+  font-size: 0.85rem;
+  color: var(--warn);
+  background: #fff4d6;
+  border: 1px solid #f0dfa3;
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-top: 10px;
+}
+.draw-hint.ok { color: var(--success); background: #e8f5e9; border-color: #c8e6c9; }
+
+/* ---------- Status line ---------- */
+.status-line {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  display: none;
+  margin-bottom: 12px;
+}
+.status-line.shown { display: block; }
+.status-line.ok  { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+.status-line.err { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+
+/* ---------- Table ---------- */
+.table-wrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+.table th, .table td {
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid #f0e9d4;
+}
+.table th {
+  background: #faf8f3;
+  font-weight: 800;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--olympus);
+}
+.table tr:hover td { background: #fdfbf3; }
+
+/* Toggle switch */
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 44px; height: 24px;
+  cursor: pointer;
+}
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle .slider {
+  position: absolute; inset: 0;
+  background: #ccc;
+  border-radius: 24px;
+  transition: background 0.2s;
+}
+.toggle .slider::before {
+  content: '';
+  position: absolute;
+  left: 3px; top: 3px;
+  width: 18px; height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+.toggle input:checked + .slider { background: var(--success); }
+.toggle input:checked + .slider::before { transform: translateX(20px); }
+
+/* Badges */
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.badge.gold { background: var(--primary); color: #111; }
+.badge.muted { background: #ddd; color: #555; }
+
+.hidden { display: none !important; }
+.footer { text-align: center; padding: 16px; font-size: 0.75rem; color: var(--muted); }
+.hint { color: var(--muted); font-size: 0.85rem; }
+
+.spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid rgba(0,0,0,0.2);
+  border-top-color: #000;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.search-box {
+  width: 100%;
+  max-width: 320px;
+  min-height: 40px;
+  padding: 8px 12px;
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+}
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <div class="header">
+    <div class="admin-badge">ADMIN</div>
+    <h1>Tournament of the Pool Gods</h1>
+    <div class="subtitle">Admin</div>
+  </div>
+
+  <!-- ═══ Key gate ═══ -->
+  <div id="keyGate" class="key-gate hidden">
+    <div class="card">
+      <h2 id="keyGateTitle">Admin key required</h2>
+      <p class="hint" id="keyGateMsg">This page needs an admin key. Add <code>?key=&lt;service_role&gt;</code> to the URL.</p>
+    </div>
+  </div>
+
+  <!-- ═══ Main admin (hidden until key valid) ═══ -->
+  <div id="adminMain" class="hidden">
+
+    <!-- Stats -->
+    <div class="card">
+      <h2>Status</h2>
+      <div class="stats" id="statsGrid">
+        <div class="stat"><div class="num" id="statTotal">0</div><div class="label">Registered</div></div>
+        <div class="stat"><div class="num" id="statPaid">0</div><div class="label">Paid</div></div>
+        <div class="stat"><div class="num" id="statUnpaid">0</div><div class="label">Unpaid</div></div>
+        <div class="stat"><div class="num" id="statPaired">0</div><div class="label">Paired</div></div>
+        <div class="stat"><div class="num" id="statTeams">0</div><div class="label">Teams</div></div>
+      </div>
+
+      <div id="drawHint" class="draw-hint hidden"></div>
+
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="btnRandomPair" onclick="runRandomPair()" disabled>
+          &#127919; Random Pair
+        </button>
+        <button type="button" class="btn btn-danger" id="btnResetDraw" onclick="resetDraw()" disabled>
+          &#8635; Reset Draw
+        </button>
+      </div>
+    </div>
+
+    <!-- Players -->
+    <div class="card">
+      <h2>Players</h2>
+      <div id="statusLine" class="status-line"></div>
+      <div style="margin-bottom: 8px">
+        <input type="text" class="search-box" id="searchBox" placeholder="Search name or APA#&hellip;" oninput="renderPlayers()">
+      </div>
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>APA#</th>
+              <th>Name</th>
+              <th>Paid</th>
+              <th>Team</th>
+              <th>Partner</th>
+              <th style="text-align:right">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="playersBody">
+            <tr><td colspan="6" class="hint">Loading&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">Pool Gods Admin &middot; v0.1</div>
+</div>
+
+<script>
+/* ══════════════════════════════════════════════════════════════════════
+   CONFIG
+   ══════════════════════════════════════════════════════════════════════ */
+const SB_URL  = 'https://dqzbekoaysgaiqljueac.supabase.co';
+const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxemJla29heXNnYWlxbGp1ZWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxNzA5NzgsImV4cCI6MjA5MDc0Njk3OH0.cCdGxZ4zEFzU_r6lWSDeoNWG67Q4MSYCAtpds035dfU';
+const params = new URLSearchParams(location.search);
+const SB_KEY = params.get('key') || '';
+
+const HEADERS = SB_KEY
+  ? { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY }
+  : { apikey: SB_ANON, Authorization: 'Bearer ' + SB_ANON };
+const WRITE_HEADERS = { ...HEADERS, 'Content-Type': 'application/json', Prefer: 'return=representation' };
+
+/* ══════════════════════════════════════════════════════════════════════
+   STATE
+   ══════════════════════════════════════════════════════════════════════ */
+let allPlayers = [];            // full table cache
+const byId = () => new Map(allPlayers.map(p => [p.id, p]));  // id → row
+
+/* ══════════════════════════════════════════════════════════════════════
+   HELPERS
+   ══════════════════════════════════════════════════════════════════════ */
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+function showStatus(msg, ok) {
+  const el = document.getElementById('statusLine');
+  el.className = 'status-line shown ' + (ok ? 'ok' : 'err');
+  el.innerHTML = msg;
+  if (ok) setTimeout(() => { el.className = 'status-line'; el.innerHTML = ''; }, 4000);
+}
+
+async function sbGet(path) {
+  const res = await fetch(SB_URL + '/rest/v1/' + path, { headers: HEADERS });
+  if (!res.ok) throw new Error(res.status + ' ' + (await res.text()));
+  return res.json();
+}
+async function sbPatch(path, body) {
+  const res = await fetch(SB_URL + '/rest/v1/' + path, {
+    method: 'PATCH', headers: WRITE_HEADERS, body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(res.status + ' ' + (await res.text()));
+  return res.json();
+}
+async function sbDelete(path) {
+  const res = await fetch(SB_URL + '/rest/v1/' + path, { method: 'DELETE', headers: HEADERS });
+  if (!res.ok) throw new Error(res.status + ' ' + (await res.text()));
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   INIT — validate key, then load
+   ══════════════════════════════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', async () => {
+  if (!SB_KEY) return document.getElementById('keyGate').classList.remove('hidden');
+
+  // Quick validation: write-level query (SELECT works with anon too, but if
+  // the key is garbage this will 401). Run against pool_gods_players.
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/pool_gods_players?select=id&limit=1', { headers: HEADERS });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+  } catch (e) {
+    const g = document.getElementById('keyGate');
+    g.classList.remove('hidden');
+    document.getElementById('keyGateTitle').textContent = 'Access Denied';
+    document.getElementById('keyGateMsg').innerHTML =
+      '<strong style="color:var(--danger)">Admin key is invalid or expired.</strong><br>Double-check <code>?key=</code>.';
+    return;
+  }
+
+  document.getElementById('adminMain').classList.remove('hidden');
+  await loadPlayers();
+});
+
+/* ══════════════════════════════════════════════════════════════════════
+   LOAD + RENDER
+   ══════════════════════════════════════════════════════════════════════ */
+async function loadPlayers() {
+  try {
+    allPlayers = await sbGet(
+      'pool_gods_players?select=*&order=registered_at.asc'
+    );
+    renderStats();
+    renderPlayers();
+  } catch (e) {
+    showStatus('Failed to load: ' + esc(e.message), false);
+  }
+}
+
+function renderStats() {
+  const total = allPlayers.length;
+  const paid = allPlayers.filter(p => p.paid).length;
+  const unpaid = total - paid;
+  const paired = allPlayers.filter(p => p.team_number != null).length;
+  const teams = new Set(allPlayers.filter(p => p.team_number != null).map(p => p.team_number)).size;
+
+  document.getElementById('statTotal').textContent = total;
+  document.getElementById('statPaid').textContent = paid;
+  document.getElementById('statUnpaid').textContent = unpaid;
+  document.getElementById('statPaired').textContent = paired;
+  document.getElementById('statTeams').textContent = teams;
+
+  // Draw button gating
+  const btnDraw = document.getElementById('btnRandomPair');
+  const btnReset = document.getElementById('btnResetDraw');
+  const hint = document.getElementById('drawHint');
+
+  const alreadyDrawn = paired > 0;
+  btnReset.disabled = !alreadyDrawn;
+
+  if (alreadyDrawn) {
+    btnDraw.disabled = true;
+    hint.className = 'draw-hint';
+    hint.textContent = 'Draw is done (' + teams + ' team' + (teams === 1 ? '' : 's') + '). Hit Reset Draw before re-drawing.';
+    hint.classList.remove('hidden');
+    return;
+  }
+  if (paid < 2) {
+    btnDraw.disabled = true;
+    hint.className = 'draw-hint';
+    hint.textContent = 'Need at least 2 paid players to run the draw.';
+    hint.classList.remove('hidden');
+    return;
+  }
+  if (paid % 2 !== 0) {
+    btnDraw.disabled = true;
+    hint.className = 'draw-hint';
+    hint.textContent = paid + ' paid player' + (paid === 1 ? '' : 's') + ' — odd number. Delete one or mark another paid to even it out.';
+    hint.classList.remove('hidden');
+    return;
+  }
+
+  btnDraw.disabled = false;
+  hint.className = 'draw-hint ok';
+  hint.textContent = 'Ready — ' + paid + ' paid, will pair into ' + (paid / 2) + ' team' + (paid / 2 === 1 ? '' : 's') + '.';
+  hint.classList.remove('hidden');
+}
+
+function renderPlayers() {
+  const body = document.getElementById('playersBody');
+  const q = (document.getElementById('searchBox').value || '').toLowerCase().trim();
+  const map = byId();
+
+  const rows = allPlayers.filter(p => {
+    if (!q) return true;
+    const hay = (p.first_name + ' ' + p.last_name + ' ' + p.member_number).toLowerCase();
+    return hay.indexOf(q) !== -1;
+  });
+
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="6" class="hint">'
+      + (q ? 'No matches.' : 'No registrations yet.')
+      + '</td></tr>';
+    return;
+  }
+
+  body.innerHTML = rows.map(p => {
+    const partner = p.partner_id ? map.get(p.partner_id) : null;
+    const partnerName = partner ? (partner.first_name + ' ' + partner.last_name) : '';
+    const teamCell = p.team_number != null
+      ? '<span class="badge gold">#' + p.team_number + '</span>'
+      : '<span class="hint">\u2014</span>';
+    const partnerCell = partnerName
+      ? esc(partnerName)
+      : '<span class="hint">\u2014</span>';
+
+    const deletable = p.team_number == null;
+    const delBtn = deletable
+      ? '<button class="btn btn-outline btn-sm" onclick="deletePlayer(' + p.id + ',\'' + esc(p.first_name + ' ' + p.last_name).replace(/\u0027/g, "\\u0027") + '\')">Delete</button>'
+      : '<button class="btn btn-outline btn-sm" disabled title="Paired \u2014 reset the draw first">Delete</button>';
+
+    return '<tr>'
+      + '<td>' + esc(p.member_number) + '</td>'
+      + '<td>' + esc(p.first_name + ' ' + p.last_name) + '</td>'
+      + '<td>'
+        + '<label class="toggle" title="Toggle paid">'
+          + '<input type="checkbox" ' + (p.paid ? 'checked' : '') + ' onchange="togglePaid(' + p.id + ',this.checked)">'
+          + '<span class="slider"></span>'
+        + '</label>'
+      + '</td>'
+      + '<td>' + teamCell + '</td>'
+      + '<td>' + partnerCell + '</td>'
+      + '<td style="text-align:right">' + delBtn + '</td>'
+    + '</tr>';
+  }).join('');
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   OPERATIONS
+   ══════════════════════════════════════════════════════════════════════ */
+
+/** Flip the paid flag on a player. */
+async function togglePaid(id, paid) {
+  try {
+    await sbPatch('pool_gods_players?id=eq.' + id, { paid, updated_at: new Date().toISOString() });
+    const p = allPlayers.find(x => x.id === id);
+    if (p) p.paid = paid;
+    renderStats();
+    renderPlayers();
+  } catch (e) {
+    showStatus('Failed to toggle paid: ' + esc(e.message), false);
+    await loadPlayers();  // re-sync
+  }
+}
+window.togglePaid = togglePaid;
+
+/** Delete a player (blocked if paired). */
+async function deletePlayer(id, displayName) {
+  const p = allPlayers.find(x => x.id === id);
+  if (!p) return;
+  if (p.team_number != null) {
+    return showStatus('Cannot delete — already paired. Reset the draw first.', false);
+  }
+  if (!confirm('Delete ' + displayName + '? This cannot be undone.')) return;
+  try {
+    await sbDelete('pool_gods_players?id=eq.' + id);
+    allPlayers = allPlayers.filter(x => x.id !== id);
+    renderStats();
+    renderPlayers();
+    showStatus('Deleted ' + displayName + '.', true);
+  } catch (e) {
+    showStatus('Failed to delete: ' + esc(e.message), false);
+  }
+}
+window.deletePlayer = deletePlayer;
+
+/**
+ * Fisher-Yates shuffle of paid players into pairs, team numbers 1..N/2.
+ * Gated in the UI by renderStats (even paid count, no prior draw).
+ */
+async function runRandomPair() {
+  const paid = allPlayers.filter(p => p.paid);
+  if (paid.length < 2 || paid.length % 2 !== 0) {
+    return showStatus('Paid count must be at least 2 and even.', false);
+  }
+  if (allPlayers.some(p => p.team_number != null)) {
+    return showStatus('Already drawn. Reset first.', false);
+  }
+
+  const btn = document.getElementById('btnRandomPair');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Drawing\u2026';
+
+  // Fisher-Yates shuffle in place
+  const shuffled = paid.slice();
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  // Build the pair updates — team 1..N/2
+  const updates = [];
+  for (let i = 0; i < shuffled.length; i += 2) {
+    const teamNumber = (i / 2) + 1;
+    const a = shuffled[i], b = shuffled[i + 1];
+    updates.push({ id: a.id, team_number: teamNumber, partner_id: b.id });
+    updates.push({ id: b.id, team_number: teamNumber, partner_id: a.id });
+  }
+
+  try {
+    const now = new Date().toISOString();
+    // Apply in parallel — small N, safe
+    await Promise.all(updates.map(u =>
+      sbPatch('pool_gods_players?id=eq.' + u.id, {
+        team_number: u.team_number,
+        partner_id: u.partner_id,
+        updated_at: now
+      })
+    ));
+    await loadPlayers();
+    showStatus('Paired ' + (updates.length / 2) + ' team' + (updates.length / 2 === 1 ? '' : 's') + '. The Pool Gods have spoken.', true);
+  } catch (e) {
+    showStatus('Draw failed: ' + esc(e.message), false);
+    await loadPlayers();
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '&#127919; Random Pair';
+  }
+}
+window.runRandomPair = runRandomPair;
+
+/** Clear all team_number + partner_id. */
+async function resetDraw() {
+  const paired = allPlayers.filter(p => p.team_number != null).length;
+  if (!paired) return;
+  if (!confirm('Reset the draw? This clears all ' + paired + ' current pairings. Players who already saw their team will see it change on next load.')) return;
+
+  const btn = document.getElementById('btnResetDraw');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Resetting\u2026';
+
+  try {
+    // One PATCH across everyone currently paired.
+    const res = await fetch(SB_URL + '/rest/v1/pool_gods_players?team_number=not.is.null', {
+      method: 'PATCH',
+      headers: WRITE_HEADERS,
+      body: JSON.stringify({ team_number: null, partner_id: null, updated_at: new Date().toISOString() })
+    });
+    if (!res.ok) throw new Error(res.status + ' ' + (await res.text()));
+    await loadPlayers();
+    showStatus('Draw reset.', true);
+  } catch (e) {
+    showStatus('Reset failed: ' + esc(e.message), false);
+    await loadPlayers();
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '&#8635; Reset Draw';
+  }
+}
+window.resetDraw = resetDraw;
+</script>
+</body>
+</html>
