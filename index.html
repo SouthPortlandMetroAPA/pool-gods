@@ -371,6 +371,25 @@ body {
   color: var(--muted);
 }
 </style>
+<script src="https://southportlandmetroapa.github.io/shared/spm-auth.js"></script>
+<style>
+  .sso-box{ border:2px solid #0031a1; border-radius:14px; padding:14px; margin-bottom:14px; background:#f5f8ff; }
+  .sso-box h3{ margin:0 0 6px; font-size:1.02rem; color:#0031a1; }
+  .sso-box p{ margin:0 0 10px; font-size:.92rem; color:#444; line-height:1.45; }
+  .sso-btn{ width:100%; font:inherit; font-weight:800; border:none; border-radius:999px; padding:13px 18px;
+            min-height:48px; cursor:pointer; background:#0031a1; color:#fff; }
+  .sso-btn.ghost{ background:#fff; color:#0031a1; border:2px solid #0031a1; }
+  .sso-who{ display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;
+            border:2px solid #0a7d33; background:#f2fbf5; border-radius:14px; padding:12px 14px; margin-bottom:14px; }
+  .sso-who b{ color:#0a7d33; }
+  .sso-who button{ background:none; border:none; color:#0031a1; font:inherit; font-weight:700; cursor:pointer; }
+  .sso-input{ width:100%; font:inherit; padding:12px 14px; border:2px solid #d7dbe0; border-radius:10px;
+              min-height:46px; box-sizing:border-box; margin-bottom:8px; }
+  .sso-msg{ font-size:.9rem; margin:8px 0 0; min-height:1.1em; }
+  .sso-msg.bad{ color:#b8001f; } .sso-msg.good{ color:#0a7d33; }
+  .sso-manual{ margin-top:4px; }
+  .sso-manual summary{ cursor:pointer; color:#0031a1; font-weight:700; font-size:.92rem; padding:6px 0; }
+</style>
 </head>
 <body>
 
@@ -409,7 +428,23 @@ body {
     </div>
 
     <div class="card">
+      <div id="ssoBox" class="sso-box">
+        <h3>Sign in and we will fill this in</h3>
+        <p>One tap and your name and number come straight from your APA record. If you have signed in to
+           another South Portland Metro app on this device you are already signed in here.</p>
+        <button type="button" class="sso-btn" id="ssoStart">Email me a sign-in link</button>
+        <div id="ssoForm" hidden style="margin-top:10px">
+          <input class="sso-input" type="text" id="ssoIdent" placeholder="Your email or APA number" autocomplete="email">
+          <button type="button" class="sso-btn" id="ssoSend">Send the link</button>
+        </div>
+        <p class="sso-msg" id="ssoMsg"></p>
+      </div>
+      <div id="ssoWho" class="sso-who" hidden>
+        <span>Signed in as <b id="ssoName"></b></span>
+        <button type="button" id="ssoOut">Not you?</button>
+      </div>
       <form id="registerForm" autocomplete="off">
+        <div id="manualFields">
         <div class="form-group">
           <label for="memberInput">APA Member Number</label>
           <input type="text" id="memberInput" inputmode="numeric" pattern="[0-9]*"
@@ -424,6 +459,7 @@ body {
             <label for="lastInput">Last Name</label>
             <input type="text" id="lastInput" autocomplete="family-name" required>
           </div>
+        </div>
         </div>
         <button type="submit" class="btn btn-gold" id="submitBtn">Sign Me Up</button>
       </form>
@@ -443,6 +479,58 @@ body {
 <div class="footer">Pool Gods &middot; v0.1</div>
 
 <script>
+/* ── Shared sign-in (spm-auth.js). SSO is the default path; the typed form below stays as the fallback.
+   Of the 169 people who have used the two event apps, 9 have no SPM record and 29 more have no email on
+   file, so a hard gate would lock out 22% of real entrants. A signed-in entry is marked verified; a typed
+   one is not, which is what every row before today already was. ── */
+var SSO = { member: null, name: null, verified: false };
+function ssoEl(id) { return document.getElementById(id); }
+function ssoShowSignedIn(name) {
+  SSO.name = name; SSO.verified = true;
+  ssoEl('ssoBox').hidden = true;
+  ssoEl('ssoWho').hidden = false;
+  ssoEl('ssoName').textContent = name || 'you';
+  var man = ssoEl('manualFields');
+  if (man) man.hidden = true;                      /* nothing to type: the record fills it */
+}
+function ssoShowSignedOut() {
+  SSO = { member: null, name: null, verified: false };
+  ssoEl('ssoBox').hidden = false;
+  ssoEl('ssoWho').hidden = true;
+  var man = ssoEl('manualFields');
+  if (man) man.hidden = false;
+}
+function ssoMsg(text, good) {
+  var m = ssoEl('ssoMsg'); m.textContent = text || '';
+  m.className = 'sso-msg' + (text ? (good ? ' good' : ' bad') : '');
+}
+(function ssoBoot() {
+  if (typeof spmAuth === 'undefined') return;       /* the shared file did not load: fallback still works */
+  ssoEl('ssoStart').onclick = function () { ssoEl('ssoForm').hidden = false; ssoEl('ssoIdent').focus(); };
+  ssoEl('ssoSend').onclick = function () {
+    var v = ssoEl('ssoIdent').value.trim();
+    if (!v) return ssoMsg('Enter your email or APA number.');
+    ssoEl('ssoSend').disabled = true; ssoMsg('');
+    spmAuth.requestLink(v, 'poolgods').then(function (r) {
+      ssoEl('ssoSend').disabled = false;
+      if (!r.ok) return ssoMsg(r.error || 'We could not find that. You can still enter below.');
+      ssoMsg('Check your email for the link. It works for 30 minutes.', true);
+    });
+  };
+  ssoEl('ssoOut').onclick = function () { spmAuth.logout(spmAuth.get()); ssoShowSignedOut(); };
+  spmAuth.boot({ app: 'poolgods' }).then(function (r) {
+    if (!r.signedIn) { if (r.error) ssoMsg(r.error); return; }
+    SSO.member = r.member_number;
+    ssoShowSignedIn(r.first_name || r.name);
+    var mi = ssoEl('memberInput'), fi = ssoEl('firstInput'), li = ssoEl('lastInput');
+    var parts = String(r.name || '').trim().split(/\s+/);
+    if (mi) mi.value = r.member_number || '';
+    if (fi) fi.value = r.first_name || parts[0] || '';
+    if (li) li.value = parts.length > 1 ? parts[parts.length - 1] : (li.value || '');
+  });
+  spmAuth.onChange(function () { location.reload(); });   /* signed out in another app */
+})();
+
 /* ══════════════════════════════════════════════════════════════════════
    POOL GODS — client logic
    ══════════════════════════════════════════════════════════════════════
@@ -549,6 +637,7 @@ registerForm.addEventListener('submit', async (e) => {
       headers: WRITE_HEADERS,
       body: JSON.stringify({
         member_number: memberNumber,
+        verified: !!SSO.verified,
         first_name:    firstName,
         last_name:     lastName
       })
