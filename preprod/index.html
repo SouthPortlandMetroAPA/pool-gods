@@ -565,10 +565,11 @@ const submitBtn      = document.getElementById('submitBtn');
 let currentPlayer = null;  // { id, member_number, first_name, last_name, paid, team_number, partner_id }
 
 /* ── Utilities ─────────────────────────────────────────────────────── */
+// Also escapes double quotes, because these values land inside HTML attributes.
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s == null ? '' : String(s);
-  return d.innerHTML;
+  return d.innerHTML.replace(/"/g, '&quot;');
 }
 function showBanner(type, msg, timeout) {
   const icon = type === 'success' ? '\u2713' : '\u26A0';

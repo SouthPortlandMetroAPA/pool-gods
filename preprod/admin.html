@@ -377,10 +377,11 @@ const byId = () => new Map(allPlayers.map(p => [p.id, p]));  // id → row
 /* ══════════════════════════════════════════════════════════════════════
    HELPERS
    ══════════════════════════════════════════════════════════════════════ */
+// Also escapes double quotes, because these values land inside HTML attributes.
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s == null ? '' : String(s);
-  return d.innerHTML;
+  return d.innerHTML.replace(/"/g, '&quot;');
 }
 function showStatus(msg, ok) {
   const el = document.getElementById('statusLine');
