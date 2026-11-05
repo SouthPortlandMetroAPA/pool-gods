@@ -545,7 +545,9 @@ const SUPABASE_URL = 'https://dqzbekoaysgaiqljueac.supabase.co';
 const ANON_KEY     = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxemJla29heXNnYWlxbGp1ZWFjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUxNzA5NzgsImV4cCI6MjA5MDc0Njk3OH0.cCdGxZ4zEFzU_r6lWSDeoNWG67Q4MSYCAtpds035dfU';
 const LS_KEY       = 'pool_gods_login';
 
-const HEADERS = { apikey: ANON_KEY, Authorization: 'Bearer ' + ANON_KEY };
+// Tables live in the poolgods schema, not the first exposed schema, so every REST call must name it.
+const SCHEMA = 'poolgods';
+const HEADERS = { apikey: ANON_KEY, Authorization: 'Bearer ' + ANON_KEY, 'Accept-Profile': SCHEMA, 'Content-Profile': SCHEMA };
 const WRITE_HEADERS = { ...HEADERS, 'Content-Type': 'application/json', Prefer: 'return=representation' };
 
 /* ── DOM ───────────────────────────────────────────────────────────── */
@@ -563,10 +565,11 @@ const submitBtn      = document.getElementById('submitBtn');
 let currentPlayer = null;  // { id, member_number, first_name, last_name, paid, team_number, partner_id }
 
 /* ── Utilities ─────────────────────────────────────────────────────── */
+// Also escapes double quotes, because these values land inside HTML attributes.
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s == null ? '' : String(s);
-  return d.innerHTML;
+  return d.innerHTML.replace(/"/g, '&quot;');
 }
 function showBanner(type, msg, timeout) {
   const icon = type === 'success' ? '\u2713' : '\u26A0';

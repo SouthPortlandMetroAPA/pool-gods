@@ -361,9 +361,11 @@ const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsIn
 const params = new URLSearchParams(location.search);
 const SB_KEY = params.get('key') || '';
 
+// Tables live in the poolgods schema, not the first exposed schema, so every REST call must name it.
+const SCHEMA = 'poolgods';
 const HEADERS = SB_KEY
-  ? { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY }
-  : { apikey: SB_ANON, Authorization: 'Bearer ' + SB_ANON };
+  ? { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY, 'Accept-Profile': SCHEMA, 'Content-Profile': SCHEMA }
+  : { apikey: SB_ANON, Authorization: 'Bearer ' + SB_ANON, 'Accept-Profile': SCHEMA, 'Content-Profile': SCHEMA };
 const WRITE_HEADERS = { ...HEADERS, 'Content-Type': 'application/json', Prefer: 'return=representation' };
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -375,10 +377,11 @@ const byId = () => new Map(allPlayers.map(p => [p.id, p]));  // id → row
 /* ══════════════════════════════════════════════════════════════════════
    HELPERS
    ══════════════════════════════════════════════════════════════════════ */
+// Also escapes double quotes, because these values land inside HTML attributes.
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s == null ? '' : String(s);
-  return d.innerHTML;
+  return d.innerHTML.replace(/"/g, '&quot;');
 }
 function showStatus(msg, ok) {
   const el = document.getElementById('statusLine');
@@ -542,7 +545,7 @@ function renderPlayers() {
 
     const deletable = p.team_number == null;
     const delBtn = deletable
-      ? '<button class="btn btn-outline btn-sm" onclick="deletePlayer(' + p.id + ',\'' + esc(p.first_name + ' ' + p.last_name).replace(/\u0027/g, "\\u0027") + '\')">Delete</button>'
+      ? '<button class="btn btn-outline btn-sm" onclick="deletePlayer(' + p.id + ',\'' + esc(p.first_name + ' ' + p.last_name).replace(/\\/g, '\\\\').replace(/\u0027/g, "\\u0027") + '\')">Delete</button>'
       : '<button class="btn btn-outline btn-sm" disabled title="Paired \u2014 reset the draw first">Delete</button>';
 
     return '<tr>'
@@ -595,7 +598,7 @@ async function deletePlayer(id, displayName) {
     allPlayers = allPlayers.filter(x => x.id !== id);
     renderStats();
     renderPlayers();
-    showStatus('Deleted ' + displayName + '.', true);
+    showStatus('Deleted ' + esc(displayName) + '.', true);
   } catch (e) {
     showStatus('Failed to delete: ' + esc(e.message), false);
   } finally {
