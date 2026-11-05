@@ -545,7 +545,7 @@ function renderPlayers() {
 
     const deletable = p.team_number == null;
     const delBtn = deletable
-      ? '<button class="btn btn-outline btn-sm" onclick="deletePlayer(' + p.id + ',\'' + esc(p.first_name + ' ' + p.last_name).replace(/\u0027/g, "\\u0027") + '\')">Delete</button>'
+      ? '<button class="btn btn-outline btn-sm" onclick="deletePlayer(' + p.id + ',\'' + esc(p.first_name + ' ' + p.last_name).replace(/\\/g, '\\\\').replace(/\u0027/g, "\\u0027") + '\')">Delete</button>'
       : '<button class="btn btn-outline btn-sm" disabled title="Paired \u2014 reset the draw first">Delete</button>';
 
     return '<tr>'
@@ -598,7 +598,7 @@ async function deletePlayer(id, displayName) {
     allPlayers = allPlayers.filter(x => x.id !== id);
     renderStats();
     renderPlayers();
-    showStatus('Deleted ' + displayName + '.', true);
+    showStatus('Deleted ' + esc(displayName) + '.', true);
   } catch (e) {
     showStatus('Failed to delete: ' + esc(e.message), false);
   } finally {
